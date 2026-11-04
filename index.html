@@ -506,6 +506,19 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
   *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; }
 }
 
+/* her own sounds */
+.custom-box { margin-top: 10px; background: var(--surface-2); border-radius: 18px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.custom-file { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 700; font-size: 15px; }
+.custom-file .cf-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.custom-box .mini-btn { background: var(--surface); }
+.mini-btn.icon { width: 38px; height: 38px; padding: 0; display: grid; place-items: center; flex: none; }
+.mini-btn.icon svg { width: 17px; height: 17px; }
+.custom-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cf-empty { margin: 0; font-size: 14px; font-weight: 600; color: var(--ink-soft); }
+.cf-note { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-soft); }
+.rec-time { font-size: 46px; font-weight: 800; line-height: 1.1; margin: 0 0 8px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.btn.is-rec { background: var(--danger); color: var(--on); box-shadow: none; animation: breathe 1.4s ease-in-out infinite; }
+
 </style>
 </head>
 <body>
@@ -713,7 +726,8 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
   const AVATARS = ['🦋', '🌙', '🐱', '🐰', '🦄', '🐼', '🌸', '⭐', '🐻', '🦊', '🐢', '🍓'];
   const AMBIENT = [
     { id: 'none', name: 'بدون', icon: '🔇' }, { id: 'rain', name: 'مطر', icon: '🌧️' },
-    { id: 'waves', name: 'أمواج', icon: '🌊' }, { id: 'calm', name: 'هدوء', icon: '🍃' }
+    { id: 'waves', name: 'أمواج', icon: '🌊' }, { id: 'calm', name: 'هدوء', icon: '🍃' },
+    { id: 'custom', name: 'صوتي', icon: '🎵' }
   ];
   const DEFAULT_SUBJECTS = [
     { id: 'gen', name: 'مذاكرة', icon: '📚' }, { id: 'math', name: 'رياضيات', icon: '➗' },
@@ -721,7 +735,7 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
     { id: 'en', name: 'إنجليزي', icon: '🔤' }, { id: 'isl', name: 'إسلامية', icon: '🕌' },
     { id: 'soc', name: 'اجتماعيات', icon: '🌍' }, { id: 'hw', name: 'واجبات', icon: '✏️' }
   ];
-  const DEFAULTS = { focus: 25, short: 5, long: 15, every: 4, autoBreak: true, autoFocus: false, wake: true, chime: true, ambient: 'none', volume: 60 };
+  const DEFAULTS = { focus: 25, short: 5, long: 15, every: 4, autoBreak: true, autoFocus: false, wake: true, chime: true, ambient: 'none', volume: 60, chimeSound: 'bell', alarmName: '', ambientName: '' };
   const STEPS = {
     focus: [1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60],
     short: [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15],
@@ -876,10 +890,11 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
     return got;
   }
 
-  /* ---------- sound (generated, no files) ---------- */
+  /* ---------- sound: generated tones, plus sounds she adds herself ---------- */
   const Sound = (() => {
     const AC = window.AudioContext || window.webkitAudioContext;
-    let ctx = null, out = null, amb = null;
+    let ctx = null, out = null, amb = null, alarmSrc = null;
+    const alarmBufs = new Map(), ambMedia = new Map();
     function ensure() {
       if (!AC) return null;
       if (!ctx) { try { ctx = new AC(); out = ctx.createGain(); out.gain.value = 1; out.connect(ctx.destination); } catch (e) { ctx = null; return null; } }
@@ -898,11 +913,52 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       o.connect(g); g.connect(out); o.start(t); o.stop(t + dur + 0.05);
     }
-    function chime(kind, volume) {
+    function bell(kind, volume) {
       const c = ensure(); if (!c) return;
       const v = 0.05 + clamp(volume) * 0.3, t0 = c.currentTime + 0.04;
       const seq = kind === 'focus' ? [523.25, 659.25, 783.99, 1046.5] : [783.99, 659.25, 523.25, 659.25];
       seq.forEach((f, i) => { const t = t0 + i * 0.17; tone(f, t, 1.4, v); tone(f * 2, t, 0.7, v * 0.16); tone(f * 3.01, t, 0.3, v * 0.05); });
+    }
+    function stopAlarm() { if (alarmSrc) { try { alarmSrc.stop(); } catch (e) { /* already ended */ } alarmSrc = null; } }
+    function playBuffer(b, volume) {
+      const c = ensure(); if (!c || !b) return;
+      stopAlarm();
+      const src = c.createBufferSource(), g = c.createGain();
+      src.buffer = b; g.gain.value = 0.15 + 0.85 * clamp(volume);
+      src.connect(g); g.connect(out); src.start();
+      alarmSrc = src; src.onended = () => { if (alarmSrc === src) alarmSrc = null; };
+    }
+    // her own alarm sound when it is ready, otherwise the bell
+    function chime(kind, volume, key) { if (key && alarmBufs.has(key)) playBuffer(alarmBufs.get(key), volume); else bell(kind, volume); }
+    function decode(buf) {
+      return new Promise((res, rej) => {
+        const c = ensure(); if (!c) { rej(new Error('no audio')); return; }
+        try { const pr = c.decodeAudioData(buf.slice(0), res, rej); if (pr && pr.catch) pr.catch(rej); } catch (e) { rej(e); }
+      });
+    }
+    async function loadAlarm(key, rec) {
+      if (!rec) { alarmBufs.delete(key); return null; }
+      let b = await decode(rec.buf);
+      if (b.duration > 60) {
+        const len = Math.floor(60 * b.sampleRate), nb = ctx.createBuffer(b.numberOfChannels, len, b.sampleRate);
+        for (let ch = 0; ch < b.numberOfChannels; ch++) nb.getChannelData(ch).set(b.getChannelData(ch).subarray(0, len));
+        b = nb;
+      }
+      alarmBufs.set(key, b);
+      return b;
+    }
+    function setAmbientSource(key, rec) {
+      const old = ambMedia.get(key);
+      if (old) {
+        if (amb && amb.media === old) stopAmbient(true);
+        try { old.el.pause(); } catch (e) { /* ignore */ }
+        try { URL.revokeObjectURL(old.url); } catch (e) { /* ignore */ }
+        ambMedia.delete(key);
+      }
+      if (!rec) return;
+      const url = URL.createObjectURL(new Blob([rec.buf], { type: rec.type || 'audio/mpeg' }));
+      const el = new Audio(); el.loop = true; el.preload = 'auto'; el.setAttribute('playsinline', ''); el.src = url;
+      ambMedia.set(key, { el, url, node: null, gain: null });
     }
     function noise(kind) {
       const sr = ctx.sampleRate, len = Math.floor(sr * 6), fade = Math.floor(sr * 0.25);
@@ -923,12 +979,26 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
       }
       return { buf, loopStart: fade / sr };
     }
-    const level = (kind, volume) => (kind === 'rain' ? 0.55 : kind === 'waves' ? 0.95 : 0.9) * (0.08 + 0.92 * clamp(volume));
-    function startAmbient(kind, volume) {
-      const c = ensure(); if (!c) return;
+    const level = (kind, volume) => (kind === 'rain' ? 0.55 : kind === 'waves' ? 0.95 : kind === 'custom' ? 1 : 0.9) * (0.08 + 0.92 * clamp(volume));
+    function ramp(param, to, secs) {
+      const t = ctx.currentTime;
+      param.cancelScheduledValues(t); param.setValueAtTime(Math.max(0.0002, param.value), t);
+      param.exponentialRampToValueAtTime(Math.max(0.0001, to), t + secs);
+    }
+    function startAmbient(kind, volume, key) {
       stopAmbient(true);
       if (!kind || kind === 'none') return;
       try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* older iOS */ }
+      if (kind === 'custom') {
+        const m = key && ambMedia.get(key); if (!m) return;
+        const c = ensure();
+        if (c && !m.node) { try { m.node = c.createMediaElementSource(m.el); m.gain = c.createGain(); m.gain.gain.value = 0.0001; m.node.connect(m.gain); m.gain.connect(out); } catch (e) { m.node = null; m.gain = null; } }
+        if (m.gain) ramp(m.gain.gain, level('custom', volume), 0.8); else { try { m.el.volume = clamp(volume); } catch (e) { /* iOS */ } }
+        amb = { media: m, kind };
+        const pr = m.el.play(); if (pr && pr.catch) pr.catch(() => { if (amb && amb.media === m) amb = null; });
+        return;
+      }
+      const c = ensure(); if (!c) return;
       const g = c.createGain(); g.gain.value = 0.0001; g.connect(out);
       const n = noise(kind === 'rain' ? 'pink' : 'brown');
       const src = c.createBufferSource(); src.buffer = n.buf; src.loop = true; src.loopStart = n.loopStart; src.loopEnd = n.buf.duration;
@@ -955,21 +1025,81 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
       amb = { g, nodes, kind };
     }
     function stopAmbient(fast) {
-      if (!amb || !ctx) return;
-      const a = amb, t = ctx.currentTime; amb = null;
+      if (!amb) return;
+      const a = amb; amb = null;
+      if (a.media) {
+        const m = a.media;
+        if (m.gain && ctx) { try { ramp(m.gain.gain, 0.0001, fast ? 0.05 : 0.5); } catch (e) { /* ignore */ } }
+        setTimeout(() => { if (!amb || amb.media !== m) { try { m.el.pause(); } catch (e) { /* ignore */ } } }, fast ? 60 : 560);
+        return;
+      }
+      if (!ctx) return;
+      const t = ctx.currentTime;
       try {
-        a.g.gain.cancelScheduledValues(t); a.g.gain.setValueAtTime(Math.max(0.0002, a.g.gain.value), t);
-        a.g.gain.exponentialRampToValueAtTime(0.0001, t + (fast ? 0.08 : 0.6));
+        ramp(a.g.gain, 0.0001, fast ? 0.08 : 0.6);
         a.nodes.forEach(nd => { try { nd.stop(t + (fast ? 0.1 : 0.7)); } catch (e) { /* stopped */ } });
       } catch (e) { /* ignore */ }
     }
     function setVolume(volume) {
-      if (!amb || !ctx) return;
-      const t = ctx.currentTime;
-      amb.g.gain.cancelScheduledValues(t); amb.g.gain.setValueAtTime(Math.max(0.0002, amb.g.gain.value), t);
-      amb.g.gain.exponentialRampToValueAtTime(Math.max(0.0002, level(amb.kind, volume)), t + 0.25);
+      if (!amb) return;
+      if (amb.media) {
+        if (amb.media.gain && ctx) ramp(amb.media.gain.gain, level('custom', volume), 0.25);
+        else { try { amb.media.el.volume = clamp(volume); } catch (e) { /* iOS */ } }
+        return;
+      }
+      if (ctx) ramp(amb.g.gain, level(amb.kind, volume), 0.25);
     }
-    return { unlock, chime, startAmbient, stopAmbient, setVolume, playing: () => !!amb, resume: ensure };
+    return {
+      unlock, chime, playBuffer, stopAlarm, decode, loadAlarm, setAmbientSource, startAmbient, stopAmbient, setVolume,
+      hasAlarm: k => alarmBufs.has(k), hasAmbient: k => ambMedia.has(k), playing: () => !!amb, resume: ensure
+    };
+  })();
+
+  /* ---------- her own sound files, kept on this device ---------- */
+  const SoundStore = (() => {
+    const cache = new Map();
+    let dbp = null;
+    function db() {
+      if (dbp) return dbp;
+      dbp = new Promise(res => {
+        try {
+          const r = indexedDB.open('mw-sounds', 1);
+          r.onupgradeneeded = () => { try { r.result.createObjectStore('files'); } catch (e) { /* exists */ } };
+          r.onsuccess = () => res(r.result);
+          r.onerror = () => res(null);
+          r.onblocked = () => res(null);
+        } catch (e) { res(null); }
+      });
+      return dbp;
+    }
+    async function put(key, rec) {
+      cache.set(key, rec);
+      const d = await db(); if (!d) return false;
+      return new Promise(res => {
+        try {
+          const tx = d.transaction('files', 'readwrite');
+          tx.objectStore('files').put(rec, key);
+          tx.oncomplete = () => res(true); tx.onerror = () => res(false); tx.onabort = () => res(false);
+        } catch (e) { res(false); }
+      });
+    }
+    async function get(key) {
+      if (cache.has(key)) return cache.get(key);
+      const d = await db(); if (!d) return null;
+      return new Promise(res => {
+        try {
+          const rq = d.transaction('files').objectStore('files').get(key);
+          rq.onsuccess = () => { const v = rq.result || null; if (v) cache.set(key, v); res(v); };
+          rq.onerror = () => res(null);
+        } catch (e) { res(null); }
+      });
+    }
+    async function del(key) {
+      cache.delete(key);
+      const d = await db(); if (!d) return;
+      try { d.transaction('files', 'readwrite').objectStore('files').delete(key); } catch (e) { /* ignore */ }
+    }
+    return { put, get, del };
   })();
 
   /* ---------- keep the screen on ---------- */
@@ -1187,7 +1317,7 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
   function start(opt = {}) {
     if (T.status === 'running') return;
     const p = P();
-    if (!opt.auto) Sound.unlock();
+    if (!opt.auto) { Sound.unlock(); Sound.stopAlarm(); prepareSounds(p, true); }
     clearTimeout(previewTimer);
     if (T.status === 'idle') {
       T.duration = durFor(T.mode); T.remaining = T.duration; T.ms = {};
@@ -1196,7 +1326,7 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
     } else setPhrase(pick('resume'));
     T.endAt = Date.now() + T.remaining; T.status = 'running'; lastRotate = Date.now();
     saveT(); startTick(); Wake.set(p.settings.wake);
-    if (T.mode === 'focus') Sound.startAmbient(p.settings.ambient, p.settings.volume / 100); else Sound.stopAmbient();
+    if (T.mode === 'focus') Sound.startAmbient(p.settings.ambient, p.settings.volume / 100, p.id + ':ambient'); else Sound.stopAmbient();
     renderControls();
   }
   function pause() {
@@ -1243,7 +1373,7 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
     const p = P(), was = T.mode, endedAt = Math.min(Date.now(), T.endAt || Date.now());
     const late = Date.now() - endedAt > 5 * 60000;
     stopTick(); Wake.set(false); Sound.stopAmbient();
-    if (p.settings.chime) Sound.chime(was === 'focus' ? 'focus' : 'break', p.settings.volume / 100);
+    if (p.settings.chime) Sound.chime(was === 'focus' ? 'focus' : 'break', p.settings.volume / 100, was === 'focus' && p.settings.chimeSound === 'custom' && p.settings.alarmName ? p.id + ':alarm' : null);
     if (was === 'focus') {
       const grown = T.flower || newFlower();
       p.sessions.push({ at: endedAt, m: Math.max(1, Math.round(T.duration / 60000)), s: p.subject, f: grown });
@@ -1278,7 +1408,7 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
       <div class="sheet-btns">${running
         ? '<button type="button" class="btn btn-primary" data-sheet-close>تمام، بستريح 😌</button>'
         : '<button type="button" class="btn btn-primary" id="cel-go">يلا استراحة ☕</button><button type="button" class="btn btn-ghost" data-sheet-close>بعدين</button>'}</div>
-    </div>`, { onMount: el => { const g = $('#cel-go', el); if (g) g.addEventListener('click', () => { Sheet.close(); start(); }); } });
+    </div>`, { onClose: () => Sound.stopAlarm(), onMount: el => { const g = $('#cel-go', el); if (g) g.addEventListener('click', () => { Sheet.close(); start(); }); } });
     Confetti.burst(PETALS.concat(['#FFFFFF', '#FFD23F']));
   }
   function breakDone() {
@@ -1286,7 +1416,7 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
     Sheet.open(`<div class="ask"><div class="ask-ic" aria-hidden="true">⏰</div><h3 class="sheet-title">خلصت الاستراحة!</h3><p class="sheet-text">${esc(pick('breakDone'))}</p>
       <div class="sheet-btns">${running ? '<button type="button" class="btn btn-primary" data-sheet-close>تمام 💪</button>'
         : '<button type="button" class="btn btn-primary" id="bd-go">يلا نركز 💪</button><button type="button" class="btn btn-ghost" data-sheet-close>بعدين</button>'}</div></div>`,
-      { onMount: el => { const g = $('#bd-go', el); if (g) g.addEventListener('click', () => { Sheet.close(); start(); }); } });
+      { onClose: () => Sound.stopAlarm(), onMount: el => { const g = $('#bd-go', el); if (g) g.addEventListener('click', () => { Sheet.close(); start(); }); } });
   }
   function idlePhrase() {
     if (T.mode !== 'focus') return pick('breakIdle');
@@ -1372,6 +1502,7 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
     if (T.status === 'running' && T.pid && T.pid !== pid) { toast('وقفي المؤقت أول ⏸'); return; }
     data.current = pid; save();
     if (T.pid !== pid) freshTimer(pid);
+    prepareSounds(P(), false);
     show('timer');
     setPhrase(idlePhrase(), true);
   }
@@ -1516,10 +1647,16 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
       <section class="card"><h3>الأصوات</h3>
         <div class="row"><div class="row-label"><b>صوت التنبيه</b><span>يرن لما يخلص الوقت</span></div>
           <div class="row-ctl"><button type="button" class="mini-btn" id="test-chime">جربي</button><button type="button" class="switch" role="switch" id="sw-chime" data-toggle="chime" aria-checked="false" aria-label="صوت التنبيه"></button></div></div>
+        <div class="row col"><div class="row-label"><b>صوت نهاية التركيز</b><span>الجرس، أو صوت من عندج</span></div>
+          <div class="seg" role="group" aria-label="صوت نهاية التركيز"><button type="button" id="cs-bell" data-chime-src="bell" aria-pressed="false">🔔 الجرس</button><button type="button" id="cs-custom" data-chime-src="custom" aria-pressed="false">🎙️ صوتي</button></div>
+          <div class="custom-box" id="alarm-box" hidden></div></div>
         <div class="row col"><div class="row-label"><b>صوت يساعدج تركزين</b><span>يشتغل وقت التركيز بس، اضغطي عليه تسمعينه</span></div>
-          <div class="seg" role="group" aria-label="صوت التركيز">${AMBIENT.map(a => `<button type="button" id="amb-${a.id}" data-amb="${a.id}" aria-pressed="false">${a.icon} ${a.name}</button>`).join('')}</div></div>
+          <div class="seg" role="group" aria-label="صوت التركيز">${AMBIENT.map(a => `<button type="button" id="amb-${a.id}" data-amb="${a.id}" aria-pressed="false">${a.icon} ${a.name}</button>`).join('')}</div>
+          <div class="custom-box" id="ambient-box" hidden></div></div>
         <div class="row"><label class="row-label" for="vol"><b>مستوى الصوت</b></label><input type="range" id="vol" min="0" max="100" step="5" value="${p.settings.volume}"></div>
         <p class="note">إذا الجهاز على الصامت ممكن ما ينسمع التنبيه 🔔</p>
+        <input type="file" id="file-alarm" accept="audio/*" hidden>
+        <input type="file" id="file-ambient" accept="audio/*" hidden>
       </section>
       <section class="card"><h3>شكلي</h3>
         <label class="field-label" for="name-input">الاسم</label>
@@ -1546,6 +1683,7 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
       </section>
       <p class="made-with">مسوّى بحب لميمي ووتين 💛 من خالتهم نوف</p>`;
     renderPhraseList();
+    renderCustomBoxes();
     refreshSettings();
   }
   function stepLabel(key, v) { return key === 'every' ? (v === 2 ? 'جلستين' : v + ' جلسات') : minLabel(v); }
@@ -1560,6 +1698,9 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
     });
     $$('#settings-page [data-toggle]').forEach(b => b.setAttribute('aria-checked', s[b.dataset.toggle] ? 'true' : 'false'));
     $$('#settings-page [data-amb]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.amb === s.ambient)));
+    $$('#settings-page [data-chime-src]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.chimeSrc === (s.chimeSound || 'bell'))));
+    setHidden($('#alarm-box'), s.chimeSound !== 'custom');
+    setHidden($('#ambient-box'), s.ambient !== 'custom');
     $$('#settings-page [data-avatar]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.avatar === p.avatar)));
     $$('#settings-page [data-accent-pick]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.accentPick === p.accent)));
     $$('#settings-page [data-appearance]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.appearance === (data.appearance || 'auto'))));
@@ -1576,6 +1717,154 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
     s[key] = arr[clamp(i + dir, 0, arr.length - 1)];
     save();
     if (key !== 'every' && T.status === 'idle') { T.duration = durFor(T.mode); T.remaining = T.duration; saveT(); }
+  }
+
+  /* ---------- her own sounds: pick a file or record ---------- */
+  const canRecord = () => !inFrame && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && typeof window.MediaRecorder === 'function';
+  const PLAY_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8.4 4.7c-.8-.5-1.8.1-1.8 1v12.6c0 .9 1 1.5 1.8 1l10.2-6.3c.7-.5.7-1.5 0-2L8.4 4.7z"/></svg>';
+  const loading = {};
+  function prepareSounds(p, withAudio) {
+    const s = p.settings, ka = p.id + ':alarm', kb = p.id + ':ambient';
+    if (s.ambientName && !Sound.hasAmbient(kb) && !loading[kb]) {
+      loading[kb] = 1;
+      SoundStore.get(kb).then(r => { if (r) Sound.setAmbientSource(kb, r); }).catch(() => {}).then(() => { loading[kb] = 0; });
+    }
+    if (withAudio && s.alarmName && !Sound.hasAlarm(ka) && !loading[ka]) {
+      loading[ka] = 1;
+      SoundStore.get(ka).then(r => (r ? Sound.loadAlarm(ka, r) : null)).catch(() => {}).then(() => { loading[ka] = 0; });
+    }
+  }
+  function guessType(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    return { mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg', caf: 'audio/x-caf', webm: 'audio/webm' }[ext] || 'audio/mpeg';
+  }
+  function canPlay(rec) {
+    return new Promise(res => {
+      let done = false;
+      const url = URL.createObjectURL(new Blob([rec.buf], { type: rec.type }));
+      const el = new Audio();
+      const fin = ok => { if (done) return; done = true; try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } res(ok); };
+      el.addEventListener('loadedmetadata', () => fin(true));
+      el.addEventListener('error', () => fin(false));
+      setTimeout(() => fin(true), 4000);
+      el.preload = 'metadata'; el.src = url;
+    });
+  }
+  const BAD_SOUND = 'ما قدرت أشغّل هالصوت، جربي ملف mp3 أو m4a';
+  async function onPickFile(kind, file) {
+    const max = kind === 'alarm' ? 4 : 40;
+    if (file.size > max * 1048576) { toast(kind === 'alarm' ? 'الملف كبير، اختاري صوت أقصر' : 'الملف كبير، الحد ' + max + ' ميغا'); return; }
+    let buf;
+    try { buf = await file.arrayBuffer(); } catch (e) { toast('ما قدرت أفتح الملف'); return; }
+    await saveCustom(kind, { buf, name: file.name.replace(/\.[^.]+$/, '') || 'صوتي', type: file.type || guessType(file.name) });
+  }
+  async function saveCustom(kind, rec) {
+    const p = P(), s = p.settings, key = p.id + ':' + kind;
+    if (kind === 'alarm') {
+      try { await Sound.loadAlarm(key, rec); } catch (e) { toast(BAD_SOUND); return; }
+    } else {
+      if (!(await canPlay(rec))) { toast(BAD_SOUND); return; }
+      Sound.setAmbientSource(key, rec);
+    }
+    const stored = await SoundStore.put(key, rec);
+    if (kind === 'alarm') { s.alarmName = rec.name; s.chimeSound = 'custom'; } else { s.ambientName = rec.name; s.ambient = 'custom'; }
+    save();
+    if (view === 'settings') { renderCustomBoxes(); refreshSettings(); }
+    toast(stored ? 'انحفظ صوتج ✅' : 'الصوت شغال، بس ما انحفظ للمرة الجاية');
+  }
+  async function previewCustom(kind) {
+    const p = P(), key = p.id + ':' + kind, vol = p.settings.volume / 100;
+    Sound.unlock();
+    if (kind === 'alarm') {
+      if (!Sound.hasAlarm(key)) {
+        const r = await SoundStore.get(key); if (!r) return;
+        try { await Sound.loadAlarm(key, r); } catch (e) { toast(BAD_SOUND); return; }
+      }
+      Sound.chime('focus', vol, key);
+      return;
+    }
+    if (!Sound.hasAmbient(key)) { const r = await SoundStore.get(key); if (!r) return; Sound.setAmbientSource(key, r); }
+    clearTimeout(previewTimer);
+    Sound.startAmbient('custom', vol, key);
+    previewTimer = setTimeout(() => { if (T.status !== 'running') Sound.stopAmbient(); }, 6000);
+  }
+  function deleteCustom(kind) {
+    const p = P(), s = p.settings, key = p.id + ':' + kind;
+    ask({ icon: '🗑️', title: 'تحذفين صوتج؟', text: kind === 'alarm' ? 'بيرجع صوت الجرس.' : 'بيوقف صوت التركيز.', no: 'لا، خليه', yes: 'إيه، احذفيه',
+      onYes: () => {
+        SoundStore.del(key);
+        if (kind === 'alarm') { Sound.loadAlarm(key, null); s.alarmName = ''; s.chimeSound = 'bell'; }
+        else { Sound.setAmbientSource(key, null); s.ambientName = ''; if (s.ambient === 'custom') s.ambient = 'none'; }
+        save();
+        if (view === 'settings') { renderCustomBoxes(); refreshSettings(); }
+        toast('انحذف الصوت');
+      } });
+  }
+  function customBoxHTML(kind) {
+    const s = P().settings, name = kind === 'alarm' ? s.alarmName : s.ambientName;
+    const file = name
+      ? `<div class="custom-file"><span aria-hidden="true">${kind === 'alarm' ? '🎙️' : '🎵'}</span><span class="cf-name">${esc(name)}</span><button type="button" class="mini-btn icon" data-play-custom="${kind}" aria-label="اسمعيه">${PLAY_ICON}</button><button type="button" class="mini-btn icon" data-del-custom="${kind}" aria-label="احذفيه">${X_ICON}</button></div>`
+      : '<p class="cf-empty">ما اخترتي صوت للحين</p>';
+    const rec = kind === 'alarm' && canRecord() ? `<button type="button" class="mini-btn" data-record>🎙️ ${name ? 'سجلي من جديد' : 'سجلي صوتج'}</button>` : '';
+    return `${file}<div class="custom-actions"><button type="button" class="mini-btn" data-pick-file="${kind}">📁 ${name ? 'غيري الملف' : 'اختاري ملف'}</button>${rec}</div>
+      <p class="cf-note">${kind === 'alarm' ? 'يطلع بدال الجرس لما تخلص جلسة التركيز.' : 'يشتغل ويعيد نفسه وقت التركيز.'} ينحفظ بهالجهاز بس.</p>`;
+  }
+  function renderCustomBoxes() {
+    const a = $('#alarm-box'), b = $('#ambient-box');
+    if (a) a.innerHTML = customBoxHTML('alarm');
+    if (b) b.innerHTML = customBoxHTML('ambient');
+  }
+  function openRecorder() {
+    const p = P();
+    let stream = null, mr = null, chunks = [], t0 = 0, iv = 0, result = null, preview = null;
+    const cleanup = () => {
+      clearInterval(iv); iv = 0;
+      if (mr && mr.state !== 'inactive') { mr.onstop = null; try { mr.stop(); } catch (e) { /* ignore */ } }
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      Sound.stopAlarm();
+    };
+    Sheet.open(`<div class="ask"><div class="ask-ic" aria-hidden="true">🎙️</div>
+      <h3 class="sheet-title">سجّلي صوت نهاية التركيز</h3>
+      <p class="sheet-text">مثلاً: «كفو يا ${esc(p.name)}! خلصتي جلستج 💛». أقصى شي 30 ثانية.</p>
+      <div class="rec-time" id="rec-time" dir="ltr">0:00</div>
+      <div class="sheet-btns">
+        <button type="button" class="btn btn-primary" id="rec-toggle">ابدئي التسجيل</button>
+        <button type="button" class="btn btn-ghost" id="rec-play" hidden>▶ اسمعيه</button>
+        <button type="button" class="btn btn-primary" id="rec-save" hidden>احفظيه</button>
+        <button type="button" class="btn btn-ghost" data-sheet-close>إلغاء</button>
+      </div></div>`, { onClose: cleanup, onMount: el => {
+      const tog = $('#rec-toggle', el), play = $('#rec-play', el), keep = $('#rec-save', el), time = $('#rec-time', el);
+      const fmtT = ms => { const x = Math.floor(ms / 1000); return Math.floor(x / 60) + ':' + pad2(x % 60); };
+      const stopRec = () => { if (mr && mr.state !== 'inactive') mr.stop(); };
+      tog.addEventListener('click', async () => {
+        if (mr && mr.state === 'recording') { stopRec(); return; }
+        Sound.unlock(); Sound.stopAlarm(); setHidden(play, true); setHidden(keep, true); result = null; preview = null;
+        try { if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+        catch (e) { toast('ما قدرت أوصل للمايك، اسمحي للتطبيق يستخدمه'); return; }
+        const type = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find(x => { try { return MediaRecorder.isTypeSupported(x); } catch (e) { return false; } });
+        try { mr = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream); }
+        catch (e) { toast('التسجيل مو مدعوم بهالجهاز'); return; }
+        chunks = [];
+        mr.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+        mr.onstop = async () => {
+          clearInterval(iv); iv = 0;
+          if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+          tog.textContent = 'سجلي من جديد'; tog.classList.remove('is-rec');
+          const blob = new Blob(chunks, { type: (mr && mr.mimeType) || type || 'audio/mp4' });
+          try {
+            const buf = await blob.arrayBuffer();
+            preview = await Sound.decode(buf);
+            result = { buf, name: 'تسجيلي', type: blob.type || 'audio/mp4' };
+            setHidden(play, false); setHidden(keep, false);
+          } catch (e) { toast('ما طلع التسجيل، جربي مرة ثانية'); }
+        };
+        mr.start(); t0 = Date.now(); time.textContent = '0:00';
+        tog.textContent = 'وقفي التسجيل'; tog.classList.add('is-rec');
+        iv = setInterval(() => { const ms = Date.now() - t0; time.textContent = fmtT(ms); if (ms >= 30000) stopRec(); }, 200);
+      });
+      play.addEventListener('click', () => { Sound.unlock(); if (preview) Sound.playBuffer(preview, P().settings.volume / 100); });
+      keep.addEventListener('click', () => { if (!result) return; const r = result; Sheet.close(); saveCustom('alarm', r); });
+    } });
   }
 
   /* ---------- events ---------- */
@@ -1612,21 +1901,27 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
   $('#v-settings').addEventListener('click', e => {
     const t = e.target.closest('button'); if (!t || t.closest('form')) return;
     const p = P(), s = p.settings;
+    if (t.dataset.chimeSrc) { s.chimeSound = t.dataset.chimeSrc; save(); renderCustomBoxes(); if (s.chimeSound === 'custom') prepareSounds(p, true); refreshSettings(); return; }
+    if (t.dataset.pickFile) { const inp = $('#file-' + t.dataset.pickFile); if (inp) { inp.value = ''; inp.click(); } return; }
+    if (t.dataset.record != null) { openRecorder(); return; }
+    if (t.dataset.playCustom) { previewCustom(t.dataset.playCustom); return; }
+    if (t.dataset.delCustom) { deleteCustom(t.dataset.delCustom); return; }
     if (t.dataset.step) stepSetting(t.dataset.step, +t.dataset.dir);
     else if (t.dataset.toggle) {
       const k = t.dataset.toggle; s[k] = !s[k]; save();
       if (k === 'wake' && T.status === 'running') Wake.set(s.wake);
     } else if (t.dataset.amb) {
-      s.ambient = t.dataset.amb; save();
+      s.ambient = t.dataset.amb; save(); renderCustomBoxes();
+      if (s.ambient === 'custom' && !s.ambientName) { refreshSettings(); const inp = $('#file-ambient'); if (inp) { inp.value = ''; inp.click(); } return; }
       Sound.unlock(); clearTimeout(previewTimer);
-      if (T.status === 'running' && T.mode === 'focus') Sound.startAmbient(s.ambient, s.volume / 100);
+      if (T.status === 'running' && T.mode === 'focus') Sound.startAmbient(s.ambient, s.volume / 100, p.id + ':ambient');
       else if (s.ambient === 'none') Sound.stopAmbient();
-      else { Sound.startAmbient(s.ambient, s.volume / 100); previewTimer = setTimeout(() => { if (T.status !== 'running') Sound.stopAmbient(); }, 4500); }
+      else { Sound.startAmbient(s.ambient, s.volume / 100, p.id + ':ambient'); previewTimer = setTimeout(() => { if (T.status !== 'running') Sound.stopAmbient(); }, 4500); }
     } else if (t.dataset.avatar) { p.avatar = t.dataset.avatar; save(); }
     else if (t.dataset.accentPick) { p.accent = t.dataset.accentPick; save(); applyTheme(); }
     else if (t.dataset.appearance) { data.appearance = t.dataset.appearance; save(); applyAppearance(); }
     else if (t.dataset.delPhrase != null) { p.phrases.splice(+t.dataset.delPhrase, 1); save(); renderPhraseList(); }
-    else if (t.id === 'test-chime') { Sound.unlock(); Sound.chime('focus', s.volume / 100); }
+    else if (t.id === 'test-chime') { if (s.chimeSound === 'custom' && s.alarmName) previewCustom('alarm'); else { Sound.unlock(); Sound.chime('focus', s.volume / 100, null); } }
     else if (t.id === 'switch-profile') { if (T.status === 'running') { toast('وقفي المؤقت أول ⏸'); return; } show('profiles'); return; }
     else if (t.id === 'reset-progress') {
       ask({ icon: '🧹', title: `تمسحين تقدّم ${esc(p.name)}؟`, text: 'بتنمسح كل الزهور والأوسمة، وما نقدر نرجعها.', no: 'لا، خليها', yes: 'إيه، امسحي',
@@ -1644,6 +1939,12 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
       p.settings.volume = +e.target.value; save(); Sound.setVolume(p.settings.volume / 100);
     }
   });
+  $('#v-settings').addEventListener('change', e => {
+    const id = e.target.id;
+    if (id !== 'file-alarm' && id !== 'file-ambient') return;
+    const f = e.target.files && e.target.files[0];
+    if (f) onPickFile(id === 'file-alarm' ? 'alarm' : 'ambient', f);
+  });
   $('#v-settings').addEventListener('submit', e => {
     if (e.target.id !== 'phrase-form') return;
     e.preventDefault();
@@ -1659,8 +1960,10 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
   });
   doc.addEventListener('pointerdown', () => {
     Sound.resume();
-    const s = P().settings;
-    if (T.status === 'running' && T.mode === 'focus' && s.ambient !== 'none' && !Sound.playing()) Sound.startAmbient(s.ambient, s.volume / 100);
+    if (!data.current) return;
+    const p = P(), s = p.settings;
+    prepareSounds(p, true);
+    if (T.status === 'running' && T.mode === 'focus' && s.ambient !== 'none' && !Sound.playing()) Sound.startAmbient(s.ambient, s.volume / 100, p.id + ':ambient');
   }, { passive: true });
   const wake = () => {
     if (doc.visibilityState !== 'visible') return;
@@ -1689,6 +1992,7 @@ input[type="range"] { width: min(52%, 220px); accent-color: var(--accent); heigh
   if (data.current && T.pid !== data.current) freshTimer(data.current);
   if (!T.flower) T.flower = newFlower();
   if (data.current && !T.duration) { T.duration = durFor(T.mode); T.remaining = T.duration; }
+  if (data.current) prepareSounds(P(), false);
   show(!data.welcomed ? 'welcome' : !data.current ? 'profiles' : 'timer');
   if (data.current) {
     if (T.status === 'running') {
